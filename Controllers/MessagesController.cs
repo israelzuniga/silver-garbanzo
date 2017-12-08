@@ -1,70 +1,52 @@
-﻿using System.Diagnostics;
-using System.Net.Http;
+﻿using System;
 using System.Threading.Tasks;
 using System.Web.Http;
-using System.Web.Http.Description;
-using Microsoft.Bot.Builder.Dialogs;
 using Microsoft.Bot.Connector;
+using Microsoft.Bot.Builder.Dialogs;
+using Microsoft.Bot.Builder.FormFlow;
+using System.Net.Http;
+using System.Net;
 
-namespace startNewDialog
+namespace BugFormFlowBot2
 {
     [BotAuthentication]
     public class MessagesController : ApiController
     {
-        /// <summary>
-        /// POST: api/Messages
-        /// receive a message from a user and send replies
-        /// </summary>
-        /// <param name="activity"></param>
-        [ResponseType(typeof(void))]
-        public virtual async Task<HttpResponseMessage> Post([FromBody] Activity activity)
+        internal static IDialog<BugReport> MakeRootDialog()
         {
-            if (activity != null)
-            {
-                // one of these will have an interface and process it
-                switch (activity.GetActivityType())
+            return Chain.From(() => FormDialog.FromForm(BugReport.BuildForm))
+                        .Loop();
+        }
+
+        public async Task<HttpResponseMessage> Post([FromBody]Activity activity)
+        {
+            if (activity?.Type == ActivityTypes.Message)
+                try
                 {
-                    case ActivityTypes.Message:
-
-                        //We start with the root dialog
-                        await Conversation.SendAsync(activity, () => new RootDialog());
-
-
-                        break;
-
-                    case ActivityTypes.ConversationUpdate:
-                        //IConversationUpdateActivity update = activity;
-                        //using (var scope = DialogModule.BeginLifetimeScope(Conversation.Container, activity))
-                        //{
-                        //    var client = scope.Resolve<IConnectorClient>();
-                        //    if (update.MembersAdded.Any())
-                        //    {
-                        //        var reply = activity.CreateReply();
-                        //        foreach (var newMember in update.MembersAdded)
-                        //        {
-                        //            if (newMember.Id != activity.Recipient.Id)
-                        //            {
-                        //                reply.Text = $"Welcome {newMember.Name}!";
-                        //            }
-                        //            else
-                        //            {
-                        //                reply.Text = $"Welcome {activity.From.Name}";
-                        //            }
-                        //            await client.Conversations.ReplyToActivityAsync(reply);
-                        //        }
-                        //    }
-                        //}
-                        break;
-                    case ActivityTypes.ContactRelationUpdate:
-                    case ActivityTypes.Typing:
-                    case ActivityTypes.DeleteUserData:
-                    case ActivityTypes.Ping:
-                    default:
-                        Trace.TraceError($"Unknown activity type ignored: {activity.GetActivityType()}");
-                        break;
+                    await Conversation.SendAsync(activity, MakeRootDialog);
                 }
-            }
-            return new HttpResponseMessage(System.Net.HttpStatusCode.Accepted);
+                catch (FormCanceledException fcEx) when(fcEx.InnerException is TooManyAttemptsException)
+                {
+                    ConnectorClient connector = new ConnectorClient(new Uri(activity.ServiceUrl));
+
+                    Activity reply = activity.CreateReply(
+                        $"Too Many Attempts at {fcEx.Last}. " +
+                        $"Completed Steps: {string.Join(", ", fcEx.Completed)}");
+
+                    await connector.Conversations.ReplyToActivityAsync(reply);
+                }
+                catch (FormCanceledException fcEx)
+                {
+                    ConnectorClient connector = new ConnectorClient(new Uri(activity.ServiceUrl));
+
+                    Activity reply = activity.CreateReply(
+                        $"Form cancelled at {fcEx.Last}. " +
+                        $"Completed Steps: {string.Join(", ", fcEx.Completed)}");
+
+                    await connector.Conversations.ReplyToActivityAsync(reply);
+                }
+
+            return Request.CreateResponse(HttpStatusCode.OK);
         }
     }
 }
